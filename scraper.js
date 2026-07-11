@@ -1,4 +1,4 @@
-// File: WorkingUpworkScraper_NoCookie.js
+// File: scraper.js
 
 const { connect } = require("puppeteer-real-browser");
 const fs = require("fs");
@@ -13,7 +13,7 @@ class WorkingUpworkScraper_NoCookie {
         console.log("🚀 Initializing browser...");
         try {
             const { browser, page } = await connect({
-                headless: false,
+                headless: true,
                 args: [
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
@@ -59,7 +59,7 @@ class WorkingUpworkScraper_NoCookie {
                 waitUntil: "networkidle0",
                 timeout: 60000,
             });
-            await this.waitForCloudflareComplete();
+            await this.waitForCloudflareComplete(this.page);
             await this.delay(3000, 5000);
             console.log("✅ Successfully reached the target page");
             return true;
@@ -75,19 +75,20 @@ class WorkingUpworkScraper_NoCookie {
         await new Promise((resolve) => setTimeout(resolve, delay));
     }
 
-    async waitForCloudflareComplete() {
+    // MODIFIED: now takes a `page` param (defaults to the main page) so the
+    // same Cloudflare-wait logic can also be reused for job-detail tabs.
+    async waitForCloudflareComplete(page = this.page) {
         console.log("🔍 Waiting for Cloudflare to complete...");
         let attempts = 0;
         const maxAttempts = 20;
         while (attempts < maxAttempts) {
             attempts++;
-            const title = await this.page.title();
-            const url = this.page.url();
+            const title = await page.title();
+            const url = page.url();
             console.log(`Attempt ${attempts}/${maxAttempts} - ${title}`);
 
             const lowerTitle = title.toLowerCase();
 
-            // Added checks for "moment" and "attention" to capture Cloudflare splash screens
             if (
                 url.includes("upwork.com") &&
                 !lowerTitle.includes("cloudflare") &&
@@ -145,23 +146,19 @@ class WorkingUpworkScraper_NoCookie {
                         const getText = (selector) =>
                             element.querySelector(selector)?.textContent.trim() || null;
 
-                        // NEW: Get Job ID from article attribute
                         const job_id = element.getAttribute("data-ev-job-uid") || null;
 
-                        // Title and URL
                         const titleEl = element.querySelector('.job-tile-title a, h2 a, h3 a');
                         const title = titleEl ? titleEl.textContent.trim() : "No title";
                         const url = titleEl ? titleEl.href : "No URL";
 
-                        // Full Description
                         const description = getText(
                             '[data-test="JpCLineClamp JobDescription"] p, .air3-line-clamp p'
                         ) || "No description";
 
-                        // Budget, Experience, and Posted Time
                         let budget = "Not specified";
                         let experienceLevel = "Not specified";
-                        let posted = "Not specified"; // Inferred based on return object
+                        let posted = "Not specified";
                         const jobInfoItems = element.querySelectorAll(
                             '[data-test="JobInfo"] li, .job-tile-info-list li'
                         );
@@ -183,14 +180,12 @@ class WorkingUpworkScraper_NoCookie {
                             }
                         });
 
-                        // Skills
                         const skills = Array.from(
                             element.querySelectorAll(
                                 '[data-test="token"] span, .air3-token span'
                             )
                         ).map((el) => el.textContent.trim());
 
-                        // Client Info
                         const paymentVerified = getText(
                             '[data-test="payment-verification-badge"]'
                         )?.includes("Payment verified")
@@ -221,7 +216,6 @@ class WorkingUpworkScraper_NoCookie {
                         };
                     });
 
-                    // Add valid jobs to the array
                     if (jobData && jobData.title !== "No title") {
                         jobs.push({
                             id: jobs.length + 1,
@@ -244,6 +238,91 @@ class WorkingUpworkScraper_NoCookie {
         }
 
         return jobs;
+    }
+
+    // NEW: after scrapeJobs() has collected the job list (with URLs), this
+    // opens each job's URL in its own new tab, waits for it to load (and
+    // clears Cloudflare if it appears), then closes that tab.
+    //
+    // This intentionally does NOT extract any detail-page data yet — it's
+    // step 1: prove out the "open each url, then close" loop. Step 2 (later)
+    // will be adding the actual scraping logic inside the try block, before
+    // the tab gets closed.
+    //
+    // options:
+    //   maxJobs     - how many of the jobs[] array to visit (default: all)
+    //   delayRange  - [min, max] ms to sit on the page before closing it,
+    //                 so it doesn't look like an instant bounce
+    async visitJobDetailPages(jobs, options = {}) {
+        const { maxJobs = jobs.length, delayRange = [2000, 4000] } = options;
+        const jobsToVisit = jobs.slice(0, maxJobs);
+
+        console.log(`\n🔗 Visiting ${jobsToVisit.length} job detail page(s)...`);
+        const visitLog = [];
+
+        for (let i = 0; i < jobsToVisit.length; i++) {
+            const job = jobsToVisit[i];
+
+            if (!job.url || job.url === "No URL") {
+                console.log(
+                    `⚠️ [${i + 1}/${jobsToVisit.length}] Skipping — no valid URL for "${job.title}"`
+                );
+                visitLog.push({
+                    job_id: job.job_id,
+                    url: job.url,
+                    success: false,
+                    error: "No URL",
+                });
+                continue;
+            }
+
+            console.log(`\n➡️ [${i + 1}/${jobsToVisit.length}] Opening: ${job.url}`);
+            let jobPage = null;
+
+            try {
+                // New tab in the SAME browser/context, so the Cloudflare
+                // clearance + cookies from init() carry over automatically.
+                jobPage = await this.browser.newPage();
+
+                await jobPage.goto(job.url, {
+                    waitUntil: "networkidle0",
+                    timeout: 60000,
+                });
+
+                await this.waitForCloudflareComplete(jobPage);
+                await this.delay(...delayRange);
+
+                const pageTitle = await jobPage.title();
+                console.log(`✅ [${i + 1}/${jobsToVisit.length}] Reached: ${pageTitle}`);
+
+                visitLog.push({
+                    job_id: job.job_id,
+                    url: job.url,
+                    success: true,
+                    visitedAt: new Date().toISOString(),
+                });
+            } catch (error) {
+                console.log(`❌ [${i + 1}/${jobsToVisit.length}] Failed: ${error.message}`);
+                visitLog.push({
+                    job_id: job.job_id,
+                    url: job.url,
+                    success: false,
+                    error: error.message,
+                });
+            } finally {
+                if (jobPage) {
+                    await jobPage.close();
+                    console.log(`🔒 [${i + 1}/${jobsToVisit.length}] Tab closed`);
+                }
+            }
+        }
+
+        const successCount = visitLog.filter((v) => v.success).length;
+        console.log(
+            `\n🏁 Done. ${successCount}/${jobsToVisit.length} job pages visited successfully.`
+        );
+
+        return visitLog;
     }
 
     async close() {

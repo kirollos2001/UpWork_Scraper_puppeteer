@@ -1,6 +1,4 @@
 // File: server.js
-const fs = require("fs");
-
 const express = require("express");
 const WorkingUpworkScraper_NoCookie = require("./scraper");
 
@@ -26,7 +24,6 @@ app.post("/scrape", async (req, res) => {
 
     console.log(`Received scrape request for URL: ${url}`);
 
-    // Choose scraper based on whether cookies are provided
     const scraper = new WorkingUpworkScraper_NoCookie();
 
     try {
@@ -36,7 +33,7 @@ app.post("/scrape", async (req, res) => {
             throw new Error("Failed to initialize the scraping browser.");
         }
 
-        // Step 2: Navigate to the user-provided URL
+        // Step 2: Navigate to the user-provided search URL
         const navSuccess = await scraper.navigateToUpwork(url);
         if (!navSuccess) {
             throw new Error(`Failed to navigate to the specified URL: ${url}`);
@@ -44,10 +41,14 @@ app.post("/scrape", async (req, res) => {
 
         // Step 3: Scrape the job listings from the page
         const jobs = await scraper.scrapeJobs(10); // You could make maxJobs an optional request param
+        console.log(`🎉 List scraping successful. Found ${jobs.length} jobs.`);
 
-        // Step 4: Send the results back to the client
-        console.log(`🎉 Scraping successful. Found ${jobs.length} jobs.`);
-        res.status(200).json(jobs);
+        // Step 4: visit each job's own URL in a new tab, extract the
+        // detail-page fields (connects, price, hire rate, etc.), then close it.
+        const detailedJobs = await scraper.visitJobDetailPages(jobs);
+
+        // Step 5: Send the results back to the client
+        res.status(200).json({ jobs, detailedJobs });
 
     } catch (error) {
         console.error("❌ SCRAPING FAILED:", error.message);
@@ -56,7 +57,7 @@ app.post("/scrape", async (req, res) => {
             details: error.message,
         });
     } finally {
-        // Step 5: CRITICAL - Always ensure the browser is closed to prevent resource leaks
+        // Step 6: CRITICAL - Always ensure the browser is closed to prevent resource leaks
         await scraper.close();
     }
 });
