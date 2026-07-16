@@ -10,7 +10,7 @@ class WorkingUpworkScraper_NoCookie {
     }
 
     async init(cookieData = null) {
-        console.log("🚀 Initializing browser...");
+        console.log("🚀 Initializing b rowser...");
         try {
             const { browser, page } = await connect({
                 headless: true,
@@ -277,13 +277,10 @@ class WorkingUpworkScraper_NoCookie {
             }
 
             console.log(`\n➡️ [${i + 1}/${jobsToVisit.length}] Opening: ${job.url}`);
-            let jobPage = null;
+            // Use the main page instead of creating a new one to keep anti-detect evasions intact
+            let jobPage = this.page;
 
             try {
-                // New tab in the SAME browser/context, so the Cloudflare
-                // clearance + cookies from init() carry over automatically.
-                jobPage = await this.browser.newPage();
-
                 await jobPage.goto(job.url, {
                     waitUntil: "networkidle0",
                     timeout: 60000,
@@ -295,11 +292,198 @@ class WorkingUpworkScraper_NoCookie {
                 const pageTitle = await jobPage.title();
                 console.log(`✅ [${i + 1}/${jobsToVisit.length}] Reached: ${pageTitle}`);
 
+                // Wait for the actual job content to render (SPA)
+                try {
+                    await jobPage.waitForSelector('h1, h2, [class*="job-details"], [class*="posting"]', { timeout: 10000 });
+                } catch (_) {
+                    console.log(`⚠️ Could not detect job content container, proceeding anyway...`);
+                }
+
+                // === DEBUG: dump page HTML for the first job so we can inspect selectors ===
+                if (i === 0) {
+                    try {
+                        const debugHtml = await jobPage.content();
+                        const path = require('path');
+                        const debugPath = path.join(__dirname, 'debug_job_page.html');
+                        fs.writeFileSync(debugPath, debugHtml, 'utf-8');
+                        console.log(`🐛 DEBUG: Full page HTML saved to ${debugPath}`);
+                    } catch (debugErr) {
+                        console.log(`⚠️ DEBUG dump failed: ${debugErr.message}`);
+                    }
+                }
+
+                console.log(`🔍 Extracting detailed job data...`);
+                const jobData = await jobPage.evaluate(() => {
+                    const text = (el) => el?.textContent.trim() || null;
+
+                    // Helper: find ANY element whose text matches a pattern
+                    const findByText = (selector, pattern) => {
+                        return Array.from(document.querySelectorAll(selector))
+                            .find(el => pattern.test(el.textContent));
+                    };
+
+                    // ──────────────────────────────────────────────────
+                    // --- Connects ---
+                    // ──────────────────────────────────────────────────
+                    let connects = null;
+                    try {
+                        // Primary: look for <strong> containing "X Connects"
+                        let connectsEl = findByText('strong', /\d+\s*connects?/i);
+                        // Fallback: any element with "connects" text
+                        if (!connectsEl) connectsEl = findByText('span, li, div, p', /\d+\s*connects?/i);
+                        if (connectsEl) {
+                            const m = connectsEl.textContent.match(/(\d+)/);
+                            connects = m ? parseInt(m[1], 10) : null;
+                        }
+                    } catch (e) { /* silent */ }
+
+                    // ──────────────────────────────────────────────────
+                    // --- Posted since ---
+                    // ──────────────────────────────────────────────────
+                    let postedSince = null;
+                    try {
+                        // Primary selector
+                        postedSince = text(document.querySelector('[data-test="PostedOn"] span'));
+                        // Fallback: match by text "Posted" or "ago"
+                        if (!postedSince) {
+                            const el = findByText('span, div, p, small', /posted\s+/i)
+                                     || findByText('span, div, small', /\d+\s*(minute|hour|day|week|month)s?\s+ago/i);
+                            postedSince = text(el);
+                        }
+                    } catch (e) { /* silent */ }
+
+                    // ──────────────────────────────────────────────────
+                    // --- Price + engagement type ---
+                    // ──────────────────────────────────────────────────
+                    let price = null;
+                    let priceType = null;
+                    try {
+                        // Primary
+                        const priceLi = document.querySelector('[data-cy="fixed-price"], [data-cy="hourly"]')?.closest('li');
+                        price = text(priceLi?.querySelector('[data-test="BudgetAmount"] strong'));
+                        priceType = text(priceLi?.querySelector('.description'));
+                        // Fallback: look for dollar amounts near "Fixed" or "Hourly"
+                        if (!price) {
+                            const budgetEl = findByText('strong, span, div', /^\$[\d,.\s]+/);
+                            if (budgetEl) price = budgetEl.textContent.trim().match(/\$[\d,.]+(?:\s*-\s*\$[\d,.]+)?/)?.[0] || null;
+                        }
+                        if (!priceType) {
+                            const typeEl = findByText('span, div, small, strong', /fixed.price|hourly/i);
+                            priceType = text(typeEl);
+                        }
+                    } catch (e) { /* silent */ }
+
+                    // ──────────────────────────────────────────────────
+                    // --- Experience level ---
+                    // ──────────────────────────────────────────────────
+                    let experienceLevel = null;
+                    try {
+                        const expLi = document.querySelector('[data-cy="expertise"]')?.closest('li');
+                        experienceLevel = text(expLi?.querySelector('strong'));
+                        if (!experienceLevel) {
+                            const el = findByText('strong, span', /entry\s*level|intermediate|expert/i);
+                            experienceLevel = text(el);
+                        }
+                    } catch (e) { /* silent */ }
+
+                    // ──────────────────────────────────────────────────
+                    // --- Client location / country ---
+                    // ──────────────────────────────────────────────────
+                    let country = null;
+                    try {
+                        country = text(document.querySelector('[data-qa="client-location"] strong'));
+                        if (!country) country = text(document.querySelector('[data-qa="client-location"]'));
+                        // Fallback: look for location icon context
+                        if (!country) {
+                            const locEl = document.querySelector('[class*="client-location"], [class*="location"]');
+                            country = text(locEl);
+                        }
+                    } catch (e) { /* silent */ }
+
+                    // ──────────────────────────────────────────────────
+                    // --- Jobs posted + hire rate ---
+                    // ──────────────────────────────────────────────────
+                    let totalJobsPosted = null;
+                    let hireRate = null;
+                    try {
+                        // Primary
+                        const jobStatsLi = document.querySelector('[data-qa="client-job-posting-stats"]');
+                        if (jobStatsLi) {
+                            const jobsPostedRaw = text(jobStatsLi.querySelector('strong'));
+                            totalJobsPosted = jobsPostedRaw ? parseInt(jobsPostedRaw.match(/\d+/)?.[0], 10) : null;
+                            const hireStatsRaw = text(jobStatsLi.querySelector('div'));
+                            const hireRateMatch = hireStatsRaw?.match(/(\d+)%\s*hire rate/i);
+                            hireRate = hireRateMatch ? parseInt(hireRateMatch[1], 10) : null;
+                        }
+                        // Fallback: text-match for "X jobs posted" and "Y% hire rate"
+                        if (totalJobsPosted === null) {
+                            const jpEl = findByText('strong, span, div, small', /\d+\s*jobs?\s*posted/i);
+                            if (jpEl) {
+                                const m = jpEl.textContent.match(/(\d+)\s*jobs?\s*posted/i);
+                                totalJobsPosted = m ? parseInt(m[1], 10) : null;
+                            }
+                        }
+                        if (hireRate === null) {
+                            const hrEl = findByText('strong, span, div, small', /\d+%\s*hire\s*rate/i);
+                            if (hrEl) {
+                                const m = hrEl.textContent.match(/(\d+)%\s*hire\s*rate/i);
+                                hireRate = m ? parseInt(m[1], 10) : null;
+                            }
+                        }
+                    } catch (e) { /* silent */ }
+
+                    // ──────────────────────────────────────────────────
+                    // --- Rating ---
+                    // ──────────────────────────────────────────────────
+                    let rating = null;
+                    let reviewSummary = null;
+                    try {
+                        const ratingBox = document.querySelector('[data-testid="buyer-rating"]');
+                        rating = text(ratingBox?.querySelector('.air3-rating-value-text'));
+                        reviewSummary = text(ratingBox?.querySelector('span.nowrap.mt-1'));
+                        // Fallback: look for rating value text anywhere
+                        if (!rating) {
+                            const rEl = document.querySelector('.air3-rating-value-text, [class*="rating-value"]');
+                            rating = text(rEl);
+                        }
+                        if (!reviewSummary) {
+                            const rsEl = findByText('span, div, small', /\d+(\.\d+)?\s+of\s+\d+\s+review/i)
+                                       || findByText('span, div, small', /\d+\s+reviews?/i);
+                            reviewSummary = text(rsEl);
+                        }
+                    } catch (e) { /* silent */ }
+
+                    // ──────────────────────────────────────────────────
+                    // --- Total spent ---
+                    // ──────────────────────────────────────────────────
+                    let totalSpent = null;
+                    try {
+                        const spendRaw = text(document.querySelector('[data-qa="client-spend"]'));
+                        totalSpent = spendRaw?.match(/\$[\d,.]+[KkMm]?/)?.[0] || null;
+                        if (!totalSpent) {
+                            // Fallback: any element with "$XK spent" or "$X.XM"
+                            const spEl = findByText('strong, span, div, small', /\$[\d,.]+[KkMm]?\s*(spent|\+)/i);
+                            if (spEl) totalSpent = spEl.textContent.match(/\$[\d,.]+[KkMm]?/)?.[0] || null;
+                        }
+                    } catch (e) { /* silent */ }
+
+                    return {
+                        connects, postedSince, price, priceType, experienceLevel,
+                        country, totalJobsPosted, hireRate, rating, reviewSummary, totalSpent
+                    };
+                });
+
+                // Merge new details into the existing job object
+                Object.assign(job, jobData);
+                console.log(`✅ Extracted data:`);
+                console.log(jobData);
+
                 visitLog.push({
                     job_id: job.job_id,
                     url: job.url,
                     success: true,
                     visitedAt: new Date().toISOString(),
+                    details: jobData
                 });
             } catch (error) {
                 console.log(`❌ [${i + 1}/${jobsToVisit.length}] Failed: ${error.message}`);
@@ -309,11 +493,6 @@ class WorkingUpworkScraper_NoCookie {
                     success: false,
                     error: error.message,
                 });
-            } finally {
-                if (jobPage) {
-                    await jobPage.close();
-                    console.log(`🔒 [${i + 1}/${jobsToVisit.length}] Tab closed`);
-                }
             }
         }
 
