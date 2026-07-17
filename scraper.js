@@ -314,162 +314,138 @@ class WorkingUpworkScraper_NoCookie {
 
                 console.log(`🔍 Extracting detailed job data...`);
                 const jobData = await jobPage.evaluate(() => {
-                    const text = (el) => el?.textContent.trim() || null;
-
-                    // Helper: find ANY element whose text matches a pattern
-                    const findByText = (selector, pattern) => {
-                        return Array.from(document.querySelectorAll(selector))
-                            .find(el => pattern.test(el.textContent));
-                    };
+                    const text = (el) => el?.textContent.trim().replace(/\s+/g, ' ') || null;
+                    const bText = document.body.innerText || document.body.textContent || "";
 
                     // ──────────────────────────────────────────────────
                     // --- Connects ---
                     // ──────────────────────────────────────────────────
                     let connects = null;
-                    try {
-                        // Primary: look for <strong> containing "X Connects"
-                        let connectsEl = findByText('strong', /\d+\s*connects?/i);
-                        // Fallback: any element with "connects" text
-                        if (!connectsEl) connectsEl = findByText('span, li, div, p', /\d+\s*connects?/i);
-                        if (connectsEl) {
-                            const m = connectsEl.textContent.match(/(\d+)/);
-                            connects = m ? parseInt(m[1], 10) : null;
-                        }
-                    } catch (e) { /* silent */ }
+                    const connectsMatch = bText.match(/Send a proposal for:\s*(\d+)\s*Connects/i) || bText.match(/(\d+)\s*Connects/i);
+                    if (connectsMatch) connects = parseInt(connectsMatch[1], 10);
 
                     // ──────────────────────────────────────────────────
-                    // --- Posted since ---
+                    // --- Posted Since ---
                     // ──────────────────────────────────────────────────
                     let postedSince = null;
-                    try {
-                        // Primary selector
-                        postedSince = text(document.querySelector('[data-test="PostedOn"] span'));
-                        // Fallback: match by text "Posted" or "ago"
-                        if (!postedSince) {
-                            const el = findByText('span, div, p, small', /posted\s+/i)
-                                     || findByText('span, div, small', /\d+\s*(minute|hour|day|week|month)s?\s+ago/i);
-                            postedSince = text(el);
-                        }
-                    } catch (e) { /* silent */ }
+                    const postedEl = document.querySelector('.posted-on-line, [data-test="PostedOn"]');
+                    if (postedEl) {
+                        const pText = text(postedEl);
+                        const pMatch = pText.match(/(\d+\s*(minute|hour|day|week|month)s?\s+ago)/i);
+                        if (pMatch) postedSince = pMatch[1];
+                        else postedSince = pText.replace(/^Posted\s*/i, '').trim();
+                    } else {
+                        const m = bText.match(/Posted\s+(.*?ago)/i);
+                        if (m) postedSince = m[1].trim();
+                    }
 
                     // ──────────────────────────────────────────────────
-                    // --- Price + engagement type ---
+                    // --- Price + Type ---
                     // ──────────────────────────────────────────────────
                     let price = null;
                     let priceType = null;
-                    try {
-                        // Primary
-                        const priceLi = document.querySelector('[data-cy="fixed-price"], [data-cy="hourly"]')?.closest('li');
-                        price = text(priceLi?.querySelector('[data-test="BudgetAmount"] strong'));
-                        priceType = text(priceLi?.querySelector('.description'));
-                        // Fallback: look for dollar amounts near "Fixed" or "Hourly"
-                        if (!price) {
-                            const budgetEl = findByText('strong, span, div', /^\$[\d,.\s]+/);
-                            if (budgetEl) price = budgetEl.textContent.trim().match(/\$[\d,.]+(?:\s*-\s*\$[\d,.]+)?/)?.[0] || null;
-                        }
-                        if (!priceType) {
-                            const typeEl = findByText('span, div, small, strong', /fixed.price|hourly/i);
-                            priceType = text(typeEl);
-                        }
-                    } catch (e) { /* silent */ }
+                    const priceLi = document.querySelector('[data-cy="fixed-price"], [data-cy="hourly"]')?.closest('li');
+                    if (priceLi) {
+                        price = text(priceLi.querySelector('strong, [data-test="BudgetAmount"] strong'));
+                        priceType = text(priceLi.querySelector('.description, small'));
+                    } else {
+                        const pMatch = bText.match(/\$[\d,.]+(?:\s*-\s*\$[\d,.]+)?/);
+                        if (pMatch) price = pMatch[0];
+                        if (bText.match(/Fixed[ -]?price/i)) priceType = "Fixed-price";
+                        else if (bText.match(/Hourly/i)) priceType = "Hourly";
+                    }
 
                     // ──────────────────────────────────────────────────
-                    // --- Experience level ---
+                    // --- Experience Level ---
                     // ──────────────────────────────────────────────────
                     let experienceLevel = null;
-                    try {
-                        const expLi = document.querySelector('[data-cy="expertise"]')?.closest('li');
-                        experienceLevel = text(expLi?.querySelector('strong'));
-                        if (!experienceLevel) {
-                            const el = findByText('strong, span', /entry\s*level|intermediate|expert/i);
-                            experienceLevel = text(el);
-                        }
-                    } catch (e) { /* silent */ }
+                    const expLi = document.querySelector('[data-cy="expertise"]')?.closest('li');
+                    if (expLi) {
+                        experienceLevel = text(expLi.querySelector('strong'));
+                    } else {
+                        const m = bText.match(/(Entry\s*level|Intermediate|Expert)/i);
+                        if (m) experienceLevel = m[1];
+                    }
 
                     // ──────────────────────────────────────────────────
-                    // --- Client location / country ---
+                    // --- Client Location / Country ---
                     // ──────────────────────────────────────────────────
                     let country = null;
-                    try {
-                        country = text(document.querySelector('[data-qa="client-location"] strong'));
-                        if (!country) country = text(document.querySelector('[data-qa="client-location"]'));
-                        // Fallback: look for location icon context
-                        if (!country) {
-                            const locEl = document.querySelector('[class*="client-location"], [class*="location"]');
-                            country = text(locEl);
-                        }
-                    } catch (e) { /* silent */ }
+                    const countryEl = document.querySelector('[data-qa="client-location"] strong, [data-qa="client-location"]');
+                    if (countryEl) {
+                        country = text(countryEl);
+                    } else {
+                        const locEl = document.querySelector('[class*="client-location"], [class*="location"]');
+                        if (locEl) country = text(locEl);
+                    }
 
                     // ──────────────────────────────────────────────────
-                    // --- Jobs posted + hire rate ---
+                    // --- Jobs Posted & Hire Rate ---
                     // ──────────────────────────────────────────────────
                     let totalJobsPosted = null;
                     let hireRate = null;
-                    try {
-                        // Primary
-                        const jobStatsLi = document.querySelector('[data-qa="client-job-posting-stats"]');
-                        if (jobStatsLi) {
-                            const jobsPostedRaw = text(jobStatsLi.querySelector('strong'));
-                            totalJobsPosted = jobsPostedRaw ? parseInt(jobsPostedRaw.match(/\d+/)?.[0], 10) : null;
-                            const hireStatsRaw = text(jobStatsLi.querySelector('div'));
-                            const hireRateMatch = hireStatsRaw?.match(/(\d+)%\s*hire rate/i);
-                            hireRate = hireRateMatch ? parseInt(hireRateMatch[1], 10) : null;
+                    const jobStatsLi = document.querySelector('[data-qa="client-job-posting-stats"]');
+                    if (jobStatsLi) {
+                        const strText = text(jobStatsLi.querySelector('strong'));
+                        if (strText) {
+                            const jm = strText.match(/(\d+)/);
+                            if (jm) totalJobsPosted = parseInt(jm[1], 10);
                         }
-                        // Fallback: text-match for "X jobs posted" and "Y% hire rate"
-                        if (totalJobsPosted === null) {
-                            const jpEl = findByText('strong, span, div, small', /\d+\s*jobs?\s*posted/i);
-                            if (jpEl) {
-                                const m = jpEl.textContent.match(/(\d+)\s*jobs?\s*posted/i);
-                                totalJobsPosted = m ? parseInt(m[1], 10) : null;
-                            }
+                        const divText = text(jobStatsLi.querySelector('div'));
+                        if (divText) {
+                            const hm = divText.match(/(\d+)%/);
+                            if (hm) hireRate = parseInt(hm[1], 10);
                         }
-                        if (hireRate === null) {
-                            const hrEl = findByText('strong, span, div, small', /\d+%\s*hire\s*rate/i);
-                            if (hrEl) {
-                                const m = hrEl.textContent.match(/(\d+)%\s*hire\s*rate/i);
-                                hireRate = m ? parseInt(m[1], 10) : null;
-                            }
-                        }
-                    } catch (e) { /* silent */ }
+                    } else {
+                        const jm = bText.match(/(\d+)\s*jobs?\s*posted/i);
+                        if (jm) totalJobsPosted = parseInt(jm[1], 10);
+                        const hm = bText.match(/(\d+)%\s*hire rate/i);
+                        if (hm) hireRate = parseInt(hm[1], 10);
+                    }
 
                     // ──────────────────────────────────────────────────
-                    // --- Rating ---
+                    // --- Rating & Review Summary ---
                     // ──────────────────────────────────────────────────
                     let rating = null;
                     let reviewSummary = null;
-                    try {
-                        const ratingBox = document.querySelector('[data-testid="buyer-rating"]');
-                        rating = text(ratingBox?.querySelector('.air3-rating-value-text'));
-                        reviewSummary = text(ratingBox?.querySelector('span.nowrap.mt-1'));
-                        // Fallback: look for rating value text anywhere
-                        if (!rating) {
-                            const rEl = document.querySelector('.air3-rating-value-text, [class*="rating-value"]');
-                            rating = text(rEl);
-                        }
-                        if (!reviewSummary) {
-                            const rsEl = findByText('span, div, small', /\d+(\.\d+)?\s+of\s+\d+\s+review/i)
-                                       || findByText('span, div, small', /\d+\s+reviews?/i);
-                            reviewSummary = text(rsEl);
-                        }
-                    } catch (e) { /* silent */ }
+                    const ratingBox = document.querySelector('[data-testid="buyer-rating"]');
+                    if (ratingBox) {
+                        const rEl = ratingBox.querySelector('.air3-rating-value-text');
+                        rating = rEl ? text(rEl) : (ratingBox.textContent.match(/(\d+\.\d+)/)?.[0] || null);
+                        
+                        const rsEl = ratingBox.querySelector('.nowrap');
+                        reviewSummary = rsEl ? text(rsEl) : (ratingBox.textContent.match(/\d+(\.\d+)?\s+of\s+\d+\s+reviews?/i)?.[0] || null);
+                    } else {
+                        const rEl = document.querySelector('.air3-rating-value-text');
+                        if (rEl) rating = text(rEl);
+                        
+                        const rsMatch = bText.match(/\d+(\.\d+)?\s+of\s+\d+\s+reviews?/i);
+                        if (rsMatch) reviewSummary = rsMatch[0];
+                    }
 
                     // ──────────────────────────────────────────────────
-                    // --- Total spent ---
+                    // --- Total Spent ---
                     // ──────────────────────────────────────────────────
                     let totalSpent = null;
-                    try {
-                        const spendRaw = text(document.querySelector('[data-qa="client-spend"]'));
-                        totalSpent = spendRaw?.match(/\$[\d,.]+[KkMm]?/)?.[0] || null;
-                        if (!totalSpent) {
-                            // Fallback: any element with "$XK spent" or "$X.XM"
-                            const spEl = findByText('strong, span, div, small', /\$[\d,.]+[KkMm]?\s*(spent|\+)/i);
-                            if (spEl) totalSpent = spEl.textContent.match(/\$[\d,.]+[KkMm]?/)?.[0] || null;
-                        }
-                    } catch (e) { /* silent */ }
+                    const spendRaw = text(document.querySelector('[data-qa="client-spend"]'));
+                    totalSpent = spendRaw?.match(/\$[\d,.]+[KkMm]?/)?.[0] || null;
+                    if (!totalSpent) {
+                        const spMatch = bText.match(/\$[\d,.]+[KkMm]?\s*(spent|\+)/i);
+                        if (spMatch) totalSpent = spMatch[0].match(/\$[\d,.]+[KkMm]?/)?.[0] || null;
+                    }
+
+                    // ──────────────────────────────────────────────────
+                    // --- Payment Method Status ---
+                    // ──────────────────────────────────────────────────
+                    let paymentMethodStatus = "Unverified";
+                    if (document.querySelector('.payment-verified') || bText.match(/Payment method verified/i) || document.querySelector('[aria-label="More info about payment verification"]')) {
+                        paymentMethodStatus = "Verified";
+                    }
 
                     return {
                         connects, postedSince, price, priceType, experienceLevel,
-                        country, totalJobsPosted, hireRate, rating, reviewSummary, totalSpent
+                        country, totalJobsPosted, hireRate, rating, reviewSummary, totalSpent,
+                        paymentMethodStatus
                     };
                 });
 
