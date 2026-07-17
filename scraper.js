@@ -299,18 +299,7 @@ class WorkingUpworkScraper_NoCookie {
                     console.log(`⚠️ Could not detect job content container, proceeding anyway...`);
                 }
 
-                // === DEBUG: dump page HTML for the first job so we can inspect selectors ===
-                if (i === 0) {
-                    try {
-                        const debugHtml = await jobPage.content();
-                        const path = require('path');
-                        const debugPath = path.join(__dirname, 'debug_job_page.html');
-                        fs.writeFileSync(debugPath, debugHtml, 'utf-8');
-                        console.log(`🐛 DEBUG: Full page HTML saved to ${debugPath}`);
-                    } catch (debugErr) {
-                        console.log(`⚠️ DEBUG dump failed: ${debugErr.message}`);
-                    }
-                }
+
 
                 console.log(`🔍 Extracting detailed job data...`);
                 const jobData = await jobPage.evaluate(() => {
@@ -371,12 +360,12 @@ class WorkingUpworkScraper_NoCookie {
                     // --- Client Location / Country ---
                     // ──────────────────────────────────────────────────
                     let country = null;
-                    const countryEl = document.querySelector('[data-qa="client-location"] strong, [data-qa="client-location"]');
-                    if (countryEl) {
-                        country = text(countryEl);
+                    const countryStrong = document.querySelector('[data-qa="client-location"] strong');
+                    if (countryStrong) {
+                        country = text(countryStrong);
                     } else {
-                        const locEl = document.querySelector('[class*="client-location"], [class*="location"]');
-                        if (locEl) country = text(locEl);
+                        const countryEl = document.querySelector('[data-qa="client-location"]');
+                        if (countryEl) country = text(countryEl);
                     }
 
                     // ──────────────────────────────────────────────────
@@ -412,13 +401,13 @@ class WorkingUpworkScraper_NoCookie {
                     if (ratingBox) {
                         const rEl = ratingBox.querySelector('.air3-rating-value-text');
                         rating = rEl ? text(rEl) : (ratingBox.textContent.match(/(\d+\.\d+)/)?.[0] || null);
-                        
+
                         const rsEl = ratingBox.querySelector('.nowrap');
                         reviewSummary = rsEl ? text(rsEl) : (ratingBox.textContent.match(/\d+(\.\d+)?\s+of\s+\d+\s+reviews?/i)?.[0] || null);
                     } else {
                         const rEl = document.querySelector('.air3-rating-value-text');
                         if (rEl) rating = text(rEl);
-                        
+
                         const rsMatch = bText.match(/\d+(\.\d+)?\s+of\s+\d+\s+reviews?/i);
                         if (rsMatch) reviewSummary = rsMatch[0];
                     }
