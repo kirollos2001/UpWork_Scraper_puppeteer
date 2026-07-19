@@ -1,50 +1,89 @@
 // File: scraper.js
 
+const path = require("path");
+const fs   = require("fs");
 const { connect } = require("puppeteer-real-browser");
-const fs = require("fs");
+
+const COOKIES_FILE = path.join(__dirname, "cookies.json");
 
 class WorkingUpworkScraper_NoCookie {
     constructor() {
-        this.browser = null;
-        this.page = null;
+        this.browser      = null;
+        this.page         = null;
+        // Use a dedicated persistent profile in the project directory
+        this.profileDir   = path.join(__dirname, "scraper_profile");
     }
 
     async init(cookieData = null) {
-        console.log("🚀 Initializing b rowser...");
+        console.log("🚀 Initializing browser...");
+
+        const chromePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+
+        // ── Ensure the profile directory exists before connect() ──────────────
+        // puppeteer-real-browser writes chrome-out.log into userDataDir on
+        // startup, so the folder MUST exist before we call connect().
+        if (!fs.existsSync(this.profileDir)) {
+            fs.mkdirSync(this.profileDir, { recursive: true });
+            console.log(`📁 Created profile directory: ${this.profileDir}`);
+        }
+
         try {
+            // ── Step 1: Launch the stealth browser ────────────────────────────
             const { browser, page } = await connect({
-                headless: true,
+                headless: false,
                 args: [
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage",
                     "--disable-gpu",
+                    "--start-maximized",
                 ],
                 fingerprint: true,
-                turnstile: true,
+                turnstile: true,   // auto-solve Cloudflare Turnstile
+                customConfig: {
+                    chromePath,
+                    userDataDir: this.profileDir,
+                },
                 connectOption: {
                     defaultViewport: null,
                 },
             });
 
             this.browser = browser;
-            this.page = page;
+            this.page    = page;
+            console.log("✅ Stealth browser launched.");
 
-            if (cookieData && Array.isArray(cookieData) && cookieData.length > 0) {
-                console.log("🔍 Attempting to load provided cookies...");
+            // ── Step 2: Navigate to Upwork so the domain is established ───────
+            // Cookies can only be set for the domain the browser is already on.
+            console.log("🌐 Pre-navigating to Upwork to set domain context...");
+            await this.page.goto("https://www.upwork.com", {
+                waitUntil: "domcontentloaded",
+                timeout: 60000,
+            });
+            await this.waitForCloudflareComplete(this.page);
+
+            // ── Step 3: Inject cookies (from caller or from cookies.json) ─────
+            let finalCookies = (cookieData && cookieData.length > 0) ? cookieData : null;
+
+            if (!finalCookies && fs.existsSync(COOKIES_FILE)) {
+                console.log("🍪 Found cookies.json — loading saved session...");
                 try {
-                    await this.page.setCookie(...cookieData);
-                    console.log("✅ Cookies loaded successfully.");
-                } catch (error) {
-                    console.error("❌ Failed to load or set cookies:", error.message);
+                    finalCookies = JSON.parse(fs.readFileSync(COOKIES_FILE, "utf8"));
+                    console.log(`   Loaded ${finalCookies.length} cookies.`);
+                } catch (e) {
+                    console.warn("⚠️ Failed to parse cookies.json:", e.message);
                 }
             }
 
-            await this.page.setUserAgent(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            );
+            if (finalCookies && finalCookies.length > 0) {
+                console.log("🔍 Injecting session cookies...");
+                await this.page.setCookie(...finalCookies);
+                console.log("✅ Cookies injected.");
+            } else {
+                console.log("⚠️ No cookies available — will proceed as a guest.");
+            }
 
-            console.log("✅ Browser initialized");
+            console.log("✅ Browser initialized.");
             return true;
         } catch (error) {
             console.error("❌ Failed to initialize browser:", error.message);
@@ -55,13 +94,40 @@ class WorkingUpworkScraper_NoCookie {
     async navigateToUpwork(targetUrl) {
         console.log(`🌐 Navigating to ${targetUrl}...`);
         try {
+            // Navigate to the actual target URL (cookies are already set from init)
             await this.page.goto(targetUrl, {
-                waitUntil: "networkidle0",
+                waitUntil: "domcontentloaded",
                 timeout: 60000,
             });
             await this.waitForCloudflareComplete(this.page);
-            await this.delay(3000, 5000);
-            console.log("✅ Successfully reached the target page");
+            await this.delay(2000, 4000);
+            console.log("✅ Successfully reached the target page.");
+
+            // ── Verify Authentication ─────────────────────────────────────────
+            console.log("🔍 Checking authentication status...");
+            const isAuthenticated = await this.page.evaluate(() => {
+                const hasLoginButton = document.querySelector(
+                    'a[href*="/ab/account-security/login"], [data-qa="login"], a[href*="/login"]'
+                );
+                const hasSignUpButton = document.querySelector('a[href*="/signup"]');
+                const hasAvatar = document.querySelector(
+                    '.nav-avatar, [data-test="nav-avatar"], [data-qa="avatar"], img[alt*="avatar"]'
+                );
+                const hasMyJobs = document.querySelector('a[href*="/ab/jobs"]');
+
+                if (hasAvatar || hasMyJobs) return true;
+                if (hasLoginButton || hasSignUpButton) return false;
+                return null;
+            });
+
+            if (isAuthenticated === true) {
+                console.log("✅ Authentication confirmed — logged in.");
+            } else if (isAuthenticated === false) {
+                console.warn("⚠️  Not authenticated. Session may have expired — re-run test-profile.js to refresh cookies.");
+            } else {
+                console.log("⚠️  Could not verify auth status, proceeding anyway...");
+            }
+
             return true;
         } catch (error) {
             console.error("❌ Navigation failed:", error.message);
