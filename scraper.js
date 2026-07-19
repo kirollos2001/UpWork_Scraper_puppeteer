@@ -497,10 +497,36 @@ class WorkingUpworkScraper_NoCookie {
                         paymentMethodStatus = "Verified";
                     }
 
+                    // ──────────────────────────────────────────────────
+                    // --- Activity on this job ---
+                    // ──────────────────────────────────────────────────
+                    let proposals        = null;
+                    let lastViewedByClient = null;
+                    let hires            = null;
+                    let interviewing     = null;
+                    let invitesSent      = null;
+                    let unansweredInvites = null;
+
+                    const activityItems = document.querySelectorAll('ul.client-activity-items li.ca-item');
+                    activityItems.forEach((item) => {
+                        const title = item.querySelector('.title')?.textContent.trim().replace(/:$/, '').trim() || '';
+                        const value = item.querySelector('.value')?.textContent.trim() || null;
+                        const lc    = title.toLowerCase();
+
+                        if (lc.includes('proposal'))           proposals          = value;
+                        else if (lc.includes('last viewed'))   lastViewedByClient = value;
+                        else if (lc.includes('hires'))         hires              = value ? parseInt(value, 10) : null;
+                        else if (lc.includes('interviewing'))  interviewing       = value ? parseInt(value, 10) : null;
+                        else if (lc.includes('invites sent'))  invitesSent        = value ? parseInt(value, 10) : null;
+                        else if (lc.includes('unanswered'))    unansweredInvites  = value ? parseInt(value, 10) : null;
+                    });
+
                     return {
                         connects, postedSince, price, priceType, experienceLevel,
                         country, totalJobsPosted, hireRate, rating, reviewSummary, totalSpent,
-                        paymentMethodStatus
+                        paymentMethodStatus,
+                        // Activity on this job
+                        proposals, lastViewedByClient, hires, interviewing, invitesSent, unansweredInvites
                     };
                 });
 
