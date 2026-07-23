@@ -1,20 +1,19 @@
 // File: scraper.js
 
 const path = require("path");
-const fs   = require("fs");
+const fs = require("fs");
 const { connect } = require("puppeteer-real-browser");
 
-const COOKIES_FILE = path.join(__dirname, "cookies.json");
 
 class WorkingUpworkScraper_NoCookie {
     constructor() {
-        this.browser      = null;
-        this.page         = null;
+        this.browser = null;
+        this.page = null;
         // Use a dedicated persistent profile in the project directory
-        this.profileDir   = path.join(__dirname, "scraper_profile");
+        this.profileDir = path.join(__dirname, "scraper_profile");
     }
 
-    async init(cookieData = null) {
+    async init() {
         console.log("🚀 Initializing browser...");
 
         const chromePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
@@ -50,38 +49,17 @@ class WorkingUpworkScraper_NoCookie {
             });
 
             this.browser = browser;
-            this.page    = page;
+            this.page = page;
             console.log("✅ Stealth browser launched.");
 
-            // ── Step 2: Navigate to Upwork so the domain is established ───────
-            // Cookies can only be set for the domain the browser is already on.
-            console.log("🌐 Pre-navigating to Upwork to set domain context...");
+            // ── Step 2: Navigate to Upwork (profile session auto-restored) ────
+            console.log("🌐 Navigating to Upwork...");
+            console.log("ℹ️  Using persistent Chrome profile.");
             await this.page.goto("https://www.upwork.com", {
                 waitUntil: "domcontentloaded",
                 timeout: 60000,
             });
             await this.waitForCloudflareComplete(this.page);
-
-            // ── Step 3: Inject cookies (from caller or from cookies.json) ─────
-            let finalCookies = (cookieData && cookieData.length > 0) ? cookieData : null;
-
-            if (!finalCookies && fs.existsSync(COOKIES_FILE)) {
-                console.log("🍪 Found cookies.json — loading saved session...");
-                try {
-                    finalCookies = JSON.parse(fs.readFileSync(COOKIES_FILE, "utf8"));
-                    console.log(`   Loaded ${finalCookies.length} cookies.`);
-                } catch (e) {
-                    console.warn("⚠️ Failed to parse cookies.json:", e.message);
-                }
-            }
-
-            if (finalCookies && finalCookies.length > 0) {
-                console.log("🔍 Injecting session cookies...");
-                await this.page.setCookie(...finalCookies);
-                console.log("✅ Cookies injected.");
-            } else {
-                console.log("⚠️ No cookies available — will proceed as a guest.");
-            }
 
             console.log("✅ Browser initialized.");
             return true;
@@ -94,13 +72,32 @@ class WorkingUpworkScraper_NoCookie {
     async navigateToUpwork(targetUrl) {
         console.log(`🌐 Navigating to ${targetUrl}...`);
         try {
-            // Navigate to the actual target URL (cookies are already set from init)
-            await this.page.goto(targetUrl, {
-                waitUntil: "domcontentloaded",
-                timeout: 60000,
-            });
+            // Use domcontentloaded instead of networkidle2.
+            // Upwork/Cloudflare performs multiple redirects during the challenge
+            // resolution which destroys the execution context when using
+            // networkidle2. domcontentloaded resolves quickly and lets
+            // waitForCloudflareComplete handle the polling loop instead.
+            try {
+                await this.page.goto(targetUrl, {
+                    waitUntil: "domcontentloaded",
+                    timeout: 90000,
+                });
+            } catch (navErr) {
+                // "Execution context was destroyed" means Cloudflare redirected
+                // us to the real page — this is expected and not a real error.
+                if (
+                    navErr.message.includes("Execution context was destroyed") ||
+                    navErr.message.includes("Navigation failed") ||
+                    navErr.message.includes("net::ERR_ABORTED")
+                ) {
+                    console.log("⚠️ Navigation context reset (Cloudflare redirect) — continuing...");
+                } else {
+                    throw navErr; // real error, re-throw
+                }
+            }
             await this.waitForCloudflareComplete(this.page);
-            await this.delay(2000, 4000);
+            // Extra settle time for JS framework to finish rendering
+            await this.delay(3000, 5000);
             console.log("✅ Successfully reached the target page.");
 
             // ── Verify Authentication ─────────────────────────────────────────
@@ -123,7 +120,7 @@ class WorkingUpworkScraper_NoCookie {
             if (isAuthenticated === true) {
                 console.log("✅ Authentication confirmed — logged in.");
             } else if (isAuthenticated === false) {
-                console.warn("⚠️  Not authenticated. Session may have expired — re-run test-profile.js to refresh cookies.");
+                console.warn("⚠️  Not authenticated. Authentication session is unavailable — please log in once using the persistent Chrome profile.");
             } else {
                 console.log("⚠️  Could not verify auth status, proceeding anyway...");
             }
@@ -173,15 +170,28 @@ class WorkingUpworkScraper_NoCookie {
 
     async findJobElements() {
         console.log("🔍 Looking for job elements...");
+
+        // Upwork's search page is a SPA — job cards are injected by JS after
+        // the initial HTML. We try several known selector patterns in order,
+        // from most-specific (new Nuxt frontend) to older class-based ones.
         const selectors = [
+            // ── New Nuxt / React frontend (2024-2025) ─────────────────────
+            '[data-test="job-tile-list"] article',
+            '[data-test="job-tile-list"] section',
+            'article[data-job-uid]',
+            '[data-test="JobTile"]',
+            // ── Legacy selectors (kept as fallback) ───────────────────────
             'article[data-test="JobTile"]',
             ".job-tile",
             ".air3-card.job-tile",
+            // ── Generic broad fallback (catches any job-like card) ────────
+            'section.air3-card',
+            '[class*="job-tile"]',
         ];
 
         for (const selector of selectors) {
             try {
-                await this.page.waitForSelector(selector, { timeout: 10000 });
+                await this.page.waitForSelector(selector, { timeout: 12000 });
                 const elements = await this.page.$$(selector);
                 if (elements.length > 0) {
                     console.log(`✅ Found ${elements.length} elements with: ${selector}`);
@@ -190,6 +200,28 @@ class WorkingUpworkScraper_NoCookie {
             } catch (error) {
                 console.log(`❌ Selector failed: ${selector}`);
             }
+        }
+
+        // ── No jobs found — save debug HTML so we can inspect the real DOM ──
+        console.log("⚠️ No job elements found. Saving debug HTML for inspection...");
+        try {
+            const debugDir = require("path").join(__dirname, "debug_html");
+            if (!require("fs").existsSync(debugDir)) {
+                require("fs").mkdirSync(debugDir, { recursive: true });
+            }
+            const pageHtml = await this.page.content();
+            const pageUrl = this.page.url();
+            const filename = `search_debug_${Date.now()}.html`;
+            require("fs").writeFileSync(require("path").join(debugDir, filename), pageHtml, "utf8");
+            console.log(`📄 Saved: debug_html/${filename}  (URL: ${pageUrl})`);
+
+            // Also log a snippet of text from the page body to help diagnose
+            const bodyText = await this.page.evaluate(() =>
+                (document.body?.innerText || "").slice(0, 500)
+            );
+            console.log("📝 Page body preview:", bodyText);
+        } catch (e) {
+            console.warn("Could not save debug HTML:", e.message);
         }
 
         return { elements: [], selector: null };
@@ -500,25 +532,25 @@ class WorkingUpworkScraper_NoCookie {
                     // ──────────────────────────────────────────────────
                     // --- Activity on this job ---
                     // ──────────────────────────────────────────────────
-                    let proposals        = null;
+                    let proposals = null;
                     let lastViewedByClient = null;
-                    let hires            = null;
-                    let interviewing     = null;
-                    let invitesSent      = null;
+                    let hires = null;
+                    let interviewing = null;
+                    let invitesSent = null;
                     let unansweredInvites = null;
 
                     const activityItems = document.querySelectorAll('ul.client-activity-items li.ca-item');
                     activityItems.forEach((item) => {
                         const title = item.querySelector('.title')?.textContent.trim().replace(/:$/, '').trim() || '';
                         const value = item.querySelector('.value')?.textContent.trim() || null;
-                        const lc    = title.toLowerCase();
+                        const lc = title.toLowerCase();
 
-                        if (lc.includes('proposal'))           proposals          = value;
-                        else if (lc.includes('last viewed'))   lastViewedByClient = value;
-                        else if (lc.includes('hires'))         hires              = value ? parseInt(value, 10) : null;
-                        else if (lc.includes('interviewing'))  interviewing       = value ? parseInt(value, 10) : null;
-                        else if (lc.includes('invites sent'))  invitesSent        = value ? parseInt(value, 10) : null;
-                        else if (lc.includes('unanswered'))    unansweredInvites  = value ? parseInt(value, 10) : null;
+                        if (lc.includes('proposal')) proposals = value;
+                        else if (lc.includes('last viewed')) lastViewedByClient = value;
+                        else if (lc.includes('hires')) hires = value ? parseInt(value, 10) : null;
+                        else if (lc.includes('interviewing')) interviewing = value ? parseInt(value, 10) : null;
+                        else if (lc.includes('invites sent')) invitesSent = value ? parseInt(value, 10) : null;
+                        else if (lc.includes('unanswered')) unansweredInvites = value ? parseInt(value, 10) : null;
                     });
 
                     return {

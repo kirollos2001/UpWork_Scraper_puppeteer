@@ -1,25 +1,30 @@
 const { connect } = require("puppeteer-real-browser");
 const readline = require("readline");
 const fs = require("fs");
-
-const COOKIES_FILE = "cookies.json";
+const path = require("path");
 
 (async () => {
-    console.log("🚀 Initializing stealth browser...");
+    console.log("🚀 Initializing browser...");
+
+    const profileDir = path.join(__dirname, "scraper_profile");
+
+    if (!fs.existsSync(profileDir)) {
+        fs.mkdirSync(profileDir, { recursive: true });
+    }
 
     const { browser, page } = await connect({
         headless: false,
         args: [
+            "--start-maximized",
             "--no-sandbox",
             "--disable-setuid-sandbox",
-            "--disable-gpu",
-            "--start-maximized"
+            "--disable-gpu"
         ],
         turnstile: true,
-        fingerprint: true,
+        fingerprint: false,
         customConfig: {
-            userDataDir: "C:\\Users\\kirollos\\puppeteer_upwork_profile",
             chromePath: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+            userDataDir: profileDir,
         },
         connectOption: {
             defaultViewport: null,
@@ -27,70 +32,51 @@ const COOKIES_FILE = "cookies.json";
     });
 
     try {
-        // ── Step 1: Go to Upwork FIRST (so the domain is set) ──────────────────
-        console.log("🌐 Navigating to Upwork...");
-        await page.goto("https://www.upwork.com", {
-            waitUntil: "domcontentloaded",
-            timeout: 60000
+        console.log("📂 Using profile:", profileDir);
+
+        // افتح صفحة Find Work مباشرة
+        await page.goto("https://www.upwork.com/nx/find-work/", {
+            waitUntil: "networkidle2",
+            timeout: 60000,
         });
 
-        // ── Step 2: If we have saved cookies, inject them NOW ──────────────────
-        if (fs.existsSync(COOKIES_FILE)) {
-            console.log("🍪 Found cookies.json — injecting saved session...");
-            const cookies = JSON.parse(fs.readFileSync(COOKIES_FILE, "utf8"));
-            await page.setCookie(...cookies);
-            console.log(`✅ Injected ${cookies.length} cookies.`);
+        // انتظر ثانيتين
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
-            // Reload so Upwork sees the injected session
-            console.log("🔄 Reloading page to apply session...");
-            await page.goto("https://www.upwork.com/nx/find-work/", {
-                waitUntil: "domcontentloaded",
-                timeout: 60000
-            });
+        const currentUrl = page.url();
 
-            // Quick check — are we logged in?
-            const title = await page.title();
-            console.log(`📄 Page title: ${title}`);
-
-            if (title.toLowerCase().includes("find work") || title.toLowerCase().includes("dashboard")) {
-                console.log("✅ Logged in successfully! Session is working.");
-                console.log("\nPress [ENTER] to close the browser.");
-                await pauseUntilEnter();
-            } else {
-                console.log("⚠️  Session might have expired. Please log in manually.");
-                console.log("\n========================================================");
-                console.log("👉 Log in manually, then press [ENTER] to re-save cookies.");
-                console.log("========================================================\n");
-                await pauseUntilEnter();
-                await saveCookies(page);
-            }
+        if (currentUrl.includes("/find-work")) {
+            console.log("✅ Already logged in.");
         } else {
-            // ── First-time setup: no cookies yet ──────────────────────────────
-            console.log("ℹ️  No cookies.json found — first-time setup.");
-            console.log("\n========================================================");
-            console.log("👉 Log in to Upwork manually in the browser window.");
-            console.log("👉 Once your dashboard loads, come back here and");
-            console.log("👉 press [ENTER] to save your session cookies.");
-            console.log("========================================================\n");
+            console.log("⚠️ Not logged in.");
+            console.log("👉 Please login manually.");
+            console.log("👉 After login press ENTER to close.");
+
             await pauseUntilEnter();
-            await saveCookies(page);
         }
 
-    } catch (error) {
-        console.error("❌ Something went wrong:", error);
+        console.log("💾 Waiting 10 seconds to let Chrome save the profile...");
+        await new Promise(resolve => setTimeout(resolve, 60000));
+
+    } catch (err) {
+        console.error(err);
     } finally {
         await browser.close();
         console.log("🔒 Browser closed.");
     }
+
 })();
 
-async function saveCookies(page) {
-    const cookies = await page.cookies();
-    fs.writeFileSync(COOKIES_FILE, JSON.stringify(cookies, null, 2));
-    console.log(`✅ Session cookies saved to ${COOKIES_FILE} (${cookies.length} cookies).`);
-}
-
 function pauseUntilEnter() {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    return new Promise(resolve => rl.question("", () => { rl.close(); resolve(); }));
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
+
+    return new Promise(resolve => {
+        rl.question("", () => {
+            rl.close();
+            resolve();
+        });
+    });
 }
