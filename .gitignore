@@ -1,4 +1,13 @@
-node_modules/
-.env
-cookies.json
-scraper_profile/
+# Ignore everything
+*
+
+# But not these files
+!scraper.js
+!server.js
+!test-profile.js
+!package-lock.json
+!package.json
+!.gitignore
+
+# Explicitly exclude results folder
+results/

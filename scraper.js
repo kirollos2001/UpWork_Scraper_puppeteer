@@ -37,7 +37,7 @@ class WorkingUpworkScraper_NoCookie {
                     "--disable-gpu",
                     "--start-maximized",
                 ],
-                fingerprint: true,
+                fingerprint: false,
                 turnstile: true,   // auto-solve Cloudflare Turnstile
                 customConfig: {
                     chromePath,
@@ -567,12 +567,16 @@ class WorkingUpworkScraper_NoCookie {
                 console.log(`✅ Extracted data:`);
                 console.log(jobData);
 
+                // Load and retain only the first ten client-history records.
+                job.clientHistory = await this.extractClientHistory(jobPage, 10);
+                console.log(`Extracted ${job.clientHistory.length} client history record(s).`);
+
                 visitLog.push({
                     job_id: job.job_id,
                     url: job.url,
                     success: true,
                     visitedAt: new Date().toISOString(),
-                    details: jobData
+                    details: { ...jobData, clientHistory: job.clientHistory }
                 });
             } catch (error) {
                 console.log(`❌ [${i + 1}/${jobsToVisit.length}] Failed: ${error.message}`);
@@ -590,9 +594,153 @@ class WorkingUpworkScraper_NoCookie {
             `\n🏁 Done. ${successCount}/${jobsToVisit.length} job pages visited successfully.`
         );
 
+        // Persist results to disk so data is never lost between runs.
+        await this.saveResults(jobs);
+
         return visitLog;
     }
 
+    /**
+     * Write the full jobs array (including clientHistory) to a timestamped
+     * JSON file inside the project's `results/` directory.
+     *
+     * File name format: results/scrape_YYYY-MM-DD_HH-MM-SS.json
+     */
+    async saveResults(jobs) {
+        try {
+            const resultsDir = path.join(__dirname, "results");
+            if (!fs.existsSync(resultsDir)) {
+                fs.mkdirSync(resultsDir, { recursive: true });
+            }
+
+            const timestamp = new Date()
+                .toISOString()
+                .replace(/:/g, "-")
+                .replace(/\..+/, ""); // e.g. 2026-07-25T02-28-21
+
+            const filename = `scrape_${timestamp}.json`;
+            const filepath = path.join(resultsDir, filename);
+
+            fs.writeFileSync(filepath, JSON.stringify(jobs, null, 2), "utf8");
+            console.log(`💾 Results saved → results/${filename}  (${jobs.length} job(s))`);
+            return filepath;
+        } catch (err) {
+            console.warn("⚠️ Could not save results to disk:", err.message);
+            return null;
+        }
+    }
+
+    /**
+     * Extract public feedback left by freelancers for this client.
+     *
+     * HTML structure (per item):
+     *   div.item[data-cy="job"]
+     *     div.main
+     *       a[data-cy="job-title"]                          ← job title
+     *       div.text-body-sm.mt-2x.mb-2x                   ← freelancer→client block
+     *         span.rr-mask
+     *           span  (star rating widget)
+     *           span.air3-truncation.ml-1x                 ← ml-1x = freelancer→client comment
+     *             span > span[id^="air3-truncation-"]       ← comment text
+     *       div.text-body-sm                               ← client→freelancer block ("To freelancer:")
+     *         span.air3-truncation   (NO ml-1x)            ← client→freelancer comment (excluded)
+     *     div[data-cy="date"]
+     *       div.text-body-sm                               ← e.g. "Jul 2026 - Jul 2026"
+     *     div[data-cy="stats"]
+     *       span  (payment type + amount)
+     *         span                                         ← amount, e.g. "$200.00"
+     *
+     * View-more button:
+     *   footer[data-v-3f329c02] span a.up-n-link           ← "View more (N)"
+     */
+    async extractClientHistory(page, maxResults = 10) {
+        // Selector for each history row
+        const jobSelector = 'div.item[data-cy="job"]';
+
+        try {
+            await page.waitForSelector(jobSelector, { timeout: 10000 });
+        } catch (_) {
+            // This job has no visible client history section.
+            return [];
+        }
+
+        // Click "View more" until we have enough rows or no button remains.
+        for (let attempt = 0; attempt < 9; attempt++) {
+            const currentCount = await page.$$eval(jobSelector, (cards) => cards.length);
+            if (currentCount >= maxResults) break;
+
+            const clicked = await page.evaluate(() => {
+                // Selector: footer a.up-n-link whose text matches "view more"
+                const viewMore = Array.from(document.querySelectorAll('footer a.up-n-link'))
+                    .find((link) => /view more/i.test(link.textContent || ""));
+
+                if (!viewMore) return false;
+                viewMore.scrollIntoView({ block: "center" });
+                viewMore.click();
+                return true;
+            });
+
+            if (!clicked) break;
+
+            try {
+                await page.waitForFunction(
+                    (selector, oldCount) => document.querySelectorAll(selector).length > oldCount,
+                    { timeout: 8000 },
+                    jobSelector,
+                    currentCount
+                );
+            } catch (_) {
+                break;
+            }
+        }
+
+        return page.$$eval(jobSelector, (jobCards, limit) => {
+            const cleanText = (el) =>
+                (el?.textContent || "").replace(/\s+/g, " ").trim();
+
+            return jobCards.slice(0, limit).map((job) => {
+                // ── Job title ────────────────────────────────────────────────────
+                const title = cleanText(job.querySelector('a[data-cy="job-title"]'));
+
+                // ── Freelancer → Client comment ───────────────────────────────────
+                // The span with class "air3-truncation ml-1x" (note: ml-1x) lives
+                // inside the first .text-body-sm.mt-2x.mb-2x block and holds the
+                // freelancer's review of the client.  The client's review of the
+                // freelancer uses just "air3-truncation" (no ml-1x) and is skipped.
+                const freelancerToClientComment = cleanText(
+                    job.querySelector(
+                        '.main > .text-body-sm.mt-2x.mb-2x ' +
+                        'span.air3-truncation.ml-1x ' +
+                        'span[id^="air3-truncation-"]'
+                    )
+                );
+
+                // ── Date range ───────────────────────────────────────────────────
+                // e.g. "Jul 2026 - Jul 2026"
+                const dateRange = cleanText(
+                    job.querySelector('div[data-cy="date"] > .text-body-sm')
+                );
+
+                // ── Payment type & amount ─────────────────────────────────────────
+                // div[data-cy="stats"] > span  →  "Fixed-price" text node + <span>$200.00</span>
+                const statsBlock = job.querySelector('div[data-cy="stats"]');
+                const statsText = cleanText(statsBlock);
+                const statsSpan = statsBlock?.querySelector(':scope > span');
+
+                // Payment type: text node directly inside the outer span
+                const paymentType =
+                    (statsSpan?.childNodes[0]?.textContent || "").trim() ||
+                    (statsText.match(/Fixed-price|Hourly/i) || [""])[0];
+
+                // Amount: the nested <span> inside the outer span, e.g. "$200.00"
+                const amount =
+                    cleanText(statsSpan?.querySelector('span')) ||
+                    (statsText.match(/\$[\d,.]+/) || [""])[0];
+
+                return { title, freelancerToClientComment, dateRange, paymentType, amount };
+            });
+        }, maxResults);
+    }
     async close() {
         try {
             if (this.browser) {
