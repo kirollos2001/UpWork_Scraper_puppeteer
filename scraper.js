@@ -511,6 +511,17 @@ class WorkingUpworkScraper_NoCookie {
                     }
 
                     // ──────────────────────────────────────────────────
+                    // --- Member Since ---
+                    // ──────────────────────────────────────────────────
+                    let memberSince = null;
+                    const memberSinceEl = document.querySelector('[data-qa="client-contract-date"] small');
+                    if (memberSinceEl) {
+                        const memberSinceText = text(memberSinceEl);
+                        const memberSinceMatch = memberSinceText.match(/Member since\s+(.+)/i);
+                        memberSince = memberSinceMatch ? memberSinceMatch[1].trim() : memberSinceText;
+                    }
+
+                    // ──────────────────────────────────────────────────
                     // --- Total Spent ---
                     // ──────────────────────────────────────────────────
                     let totalSpent = null;
@@ -555,7 +566,7 @@ class WorkingUpworkScraper_NoCookie {
 
                     return {
                         connects, postedSince, price, priceType, experienceLevel,
-                        country, totalJobsPosted, hireRate, rating, reviewSummary, totalSpent,
+                        country, memberSince, totalJobsPosted, hireRate, rating, reviewSummary, totalSpent,
                         paymentMethodStatus,
                         // Activity on this job
                         proposals, lastViewedByClient, hires, interviewing, invitesSent, unansweredInvites
