@@ -11,6 +11,8 @@ class WorkingUpworkScraper_NoCookie {
         this.page = null;
         // Use a dedicated persistent profile in the project directory
         this.profileDir = path.join(__dirname, "scraper_profile");
+        // Path to the file that persists the last 10 scraped job IDs
+        this.seenJobIdsFile = path.join(__dirname, "seen_job_ids.json");
     }
 
     async init() {
@@ -752,6 +754,45 @@ class WorkingUpworkScraper_NoCookie {
             });
         }, maxResults);
     }
+    // ── Deduplication helpers ─────────────────────────────────────────────────
+
+    /**
+     * Load the previously saved list of job IDs from disk.
+     * Returns an array of up to 10 job ID strings, or [] if the file
+     * does not exist yet (first run).
+     */
+    loadSeenJobIds() {
+        try {
+            if (fs.existsSync(this.seenJobIdsFile)) {
+                const raw = fs.readFileSync(this.seenJobIdsFile, "utf8");
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) {
+                    console.log(`📂 Loaded ${parsed.length} previously seen job ID(s).`);
+                    return parsed;
+                }
+            }
+        } catch (err) {
+            console.warn("⚠️ Could not read seen_job_ids.json:", err.message);
+        }
+        return [];
+    }
+
+    /**
+     * Persist the latest list of job IDs (capped at 10) to disk so they
+     * can be compared on the next scheduled run.
+     *
+     * @param {string[]} jobIds - The full list of job IDs from the most recent scrape.
+     */
+    saveSeenJobIds(jobIds) {
+        try {
+            const toSave = jobIds.slice(0, 10);
+            fs.writeFileSync(this.seenJobIdsFile, JSON.stringify(toSave, null, 2), "utf8");
+            console.log(`💾 Saved ${toSave.length} job ID(s) to seen_job_ids.json`);
+        } catch (err) {
+            console.warn("⚠️ Could not write seen_job_ids.json:", err.message);
+        }
+    }
+
     async close() {
         try {
             if (this.browser) {

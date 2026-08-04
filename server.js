@@ -67,20 +67,56 @@ app.post("/scrape", async (req, res) => {
         // Reuse (or lazily init) the singleton browser
         const scraper = await getOrInitScraper();
 
-        // Navigate to the user-provided search URL
+        // ── Step 1: Load previously seen job IDs ─────────────────────────────
+        const seenIds = scraper.loadSeenJobIds();
+        const seenSet = new Set(seenIds);
+
+        // ── Step 2: Navigate and scrape the first 10 job listings ────────────
         const navSuccess = await scraper.navigateToUpwork(url);
         if (!navSuccess) {
             throw new Error(`Failed to navigate to the specified URL: ${url}`);
         }
 
-        // Scrape the job listings from the page
         const jobs = await scraper.scrapeJobs(10);
         console.log(`🎉 List scraping successful. Found ${jobs.length} jobs.`);
 
-        // Visit each job's detail page and enrich the data
-        const detailedJobs = await scraper.visitJobDetailPages(jobs);
+        // ── Step 3: Deduplication check ───────────────────────────────────────
+        const currentIds = jobs.map((j) => j.job_id).filter(Boolean);
 
-        res.status(200).json({ jobs, detailedJobs });
+        // Determine which jobs are genuinely new
+        const newJobs = jobs.filter((j) => j.job_id && !seenSet.has(j.job_id));
+
+        if (newJobs.length === 0) {
+            console.log("⏭️  No new jobs detected — all IDs already seen. Skipping detail extraction.");
+
+            return res.status(200).json({
+                status: "no_new_jobs",
+                message: "All scraped job IDs were already processed in a previous run.",
+                seenIds,
+                currentIds,
+                jobs: [],
+                detailedJobs: [],
+            });
+        }
+
+        console.log(`🆕 ${newJobs.length} new job(s) detected: ${newJobs.map((j) => j.job_id).join(", ")}`);
+        console.log(`⏭️  Skipping ${jobs.length - newJobs.length} already-seen job(s).`);
+
+        // ── Step 4: Visit only the new job detail pages ───────────────────────
+        const detailedJobs = await scraper.visitJobDetailPages(newJobs);
+
+        // ── Step 5: Persist the updated ID list (latest 10 scraped) ──────────
+        // Always save the full current page's IDs (not just new ones) so that
+        // the next run compares against the current page state.
+        scraper.saveSeenJobIds(currentIds);
+
+        res.status(200).json({
+            status: "ok",
+            newJobsCount: newJobs.length,
+            skippedJobsCount: jobs.length - newJobs.length,
+            jobs: newJobs,
+            detailedJobs,
+        });
 
     } catch (error) {
         console.error("❌ SCRAPING FAILED:", error.message);
