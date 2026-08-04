@@ -34,35 +34,40 @@ const path = require("path");
     try {
         console.log("📂 Using profile:", profileDir);
 
-        // افتح صفحة Find Work مباشرة
         await page.goto("https://www.upwork.com/nx/find-work/", {
             waitUntil: "networkidle2",
             timeout: 60000,
         });
 
-        // انتظر ثانيتين
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        const isLogged = async () => {
+            const url = page.url();
+            return url.includes("/find-work");
+        };
 
-        const currentUrl = page.url();
-
-        if (currentUrl.includes("/find-work")) {
+        if (await isLogged()) {
             console.log("✅ Already logged in.");
         } else {
             console.log("⚠️ Not logged in.");
-            console.log("👉 Please login manually.");
-            console.log("👉 After login press ENTER to close.");
+            console.log("👉 Please complete login and 2FA manually in the browser.");
+            console.log("👉 Press ENTER here once you are successfully logged in and on the dashboard.");
 
             await pauseUntilEnter();
+            
+            if (await isLogged()) {
+                console.log("✅ Login confirmed.");
+            } else {
+                console.log("❌ Login not detected. Please check the browser.");
+            }
         }
 
-        console.log("💾 Waiting 10 seconds to let Chrome save the profile...");
-        await new Promise(resolve => setTimeout(resolve, 60000));
+        console.log("💾 Keeping session open for 30 seconds to ensure profile sync...");
+        await new Promise(resolve => setTimeout(resolve, 30000));
 
     } catch (err) {
-        console.error(err);
+        console.error("Error during session:", err);
     } finally {
         await browser.close();
-        console.log("🔒 Browser closed.");
+        console.log("🔒 Browser closed. Profile data should be saved.");
     }
 
 })();
