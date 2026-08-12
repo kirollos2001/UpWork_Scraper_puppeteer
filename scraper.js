@@ -18,7 +18,18 @@ class WorkingUpworkScraper_NoCookie {
     async init() {
         console.log("🚀 Initializing browser...");
 
-        const chromePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+        // ── Cross-platform Chrome executable resolution ──────────────────────
+        // Priority:
+        //   1. PUPPETEER_EXECUTABLE_PATH env var  (set by Dockerfile on Linux)
+        //   2. CHROME_PATH env var               (optional manual override)
+        //   3. Windows default install path      (local dev fallback)
+        //   4. undefined → chrome-launcher auto-discovers on Linux/macOS
+        const chromePath =
+            process.env.PUPPETEER_EXECUTABLE_PATH ||
+            process.env.CHROME_PATH ||
+            (process.platform === "win32"
+                ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+                : undefined);
 
         // ── Ensure the profile directory exists before connect() ──────────────
         // puppeteer-real-browser writes chrome-out.log into userDataDir on
@@ -31,6 +42,8 @@ class WorkingUpworkScraper_NoCookie {
         try {
             // ── Step 1: Launch the stealth browser ────────────────────────────
             const { browser, page } = await connect({
+                // We ALWAYS use headed mode (false) now, because Cloudflare Turnstile
+                // strictly blocks headless: "new". Xvfb provides the virtual display.
                 headless: false,
                 args: [
                     "--no-sandbox",
@@ -41,6 +54,9 @@ class WorkingUpworkScraper_NoCookie {
                 ],
                 fingerprint: false,
                 turnstile: true,   // auto-solve Cloudflare Turnstile
+                // Always true: Xvfb is owned by login-entrypoint.sh (login mode)
+                // or not needed at all (production). Never managed by this library.
+                disableXvfb: true,
                 customConfig: {
                     chromePath,
                     userDataDir: this.profileDir,
@@ -159,7 +175,8 @@ class WorkingUpworkScraper_NoCookie {
                 !lowerTitle.includes("cloudflare") &&
                 !lowerTitle.includes("checking") &&
                 !lowerTitle.includes("moment") &&
-                !lowerTitle.includes("attention required")
+                !lowerTitle.includes("attention required") &&
+                !lowerTitle.includes("challenge")
             ) {
                 console.log("✅ Cloudflare completely bypassed!");
                 return true;
