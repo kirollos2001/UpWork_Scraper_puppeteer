@@ -3,6 +3,7 @@
 const path = require("path");
 const fs = require("fs");
 const { connect } = require("puppeteer-real-browser");
+const puppeteer = require("puppeteer");
 
 
 class WorkingUpworkScraper_NoCookie {
@@ -29,7 +30,7 @@ class WorkingUpworkScraper_NoCookie {
             process.env.CHROME_PATH ||
             (process.platform === "win32"
                 ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
-                : undefined);
+                : puppeteer.executablePath());
 
         // ── Ensure the profile directory exists before connect() ──────────────
         // puppeteer-real-browser writes chrome-out.log into userDataDir on
