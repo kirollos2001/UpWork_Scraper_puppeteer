@@ -30,7 +30,7 @@ class WorkingUpworkScraper_NoCookie {
             process.env.CHROME_PATH ||
             (process.platform === "win32"
                 ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
-                : puppeteer.executablePath());
+                : await puppeteer.executablePath());
 
         // ── Ensure the profile directory exists before connect() ──────────────
         // puppeteer-real-browser writes chrome-out.log into userDataDir on
