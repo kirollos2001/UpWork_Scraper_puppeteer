@@ -86,7 +86,3 @@ The scraper saves extracted job listings to the configured output directory in J
 ## Contributing
 
 Contributions are welcome. Please open an issue or submit a pull request with improvements, bug fixes, or tests.
-
-## License
-
-This repository does not include a license file. Add a LICENSE file (e.g., MIT) if you want to permit reuse.
